@@ -8,6 +8,7 @@ import {
 } from "discord.js";
 
 import { VoiceRouter } from "./voiceRouter.js";
+import { VoiceBridge } from "./voiceBridge.js";
 
 // ==========================================
 // ENVIRONMENT VARIABLES
@@ -16,6 +17,7 @@ import { VoiceRouter } from "./voiceRouter.js";
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
+const bridge = new VoiceBridge();
 
 if (!token || !clientId || !guildId) {
   throw new Error(
