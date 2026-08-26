@@ -41,21 +41,21 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("alive")
-    .setDescription("Mark a player as alive")
+    .setDescription("Move a player to Alive Voice")
     .addUserOption(option =>
       option
         .setName("player")
-        .setDescription("Player")
+        .setDescription("Discord player")
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("dead")
-    .setDescription("Mark a player as dead")
+    .setDescription("Move a player to Dead Voice")
     .addUserOption(option =>
       option
         .setName("player")
-        .setDescription("Player")
+        .setDescription("Discord player")
         .setRequired(true)
     ),
 
@@ -65,11 +65,11 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("end")
-    .setDescription("End the round")
+    .setDescription("End the current round")
 ].map(command => command.toJSON());
 
 // ==========================================
-// REGISTER SLASH COMMANDS
+// REGISTER COMMANDS
 // ==========================================
 
 const rest = new REST({
@@ -112,13 +112,33 @@ async function movePlayer(
   const member =
     await guild.members.fetch(userId);
 
-  if (!member.voice.channel) {
-    throw new Error(
-      `${member.user.username} is not connected to a voice channel.`
-    );
+  // Player is not in a voice channel
+  if (!member.voice.channelId) {
+    return {
+      success: false,
+      reason: "NOT_IN_VOICE",
+      member
+    };
+  }
+
+  // Player is already in target channel
+  if (
+    member.voice.channelId === channelId
+  ) {
+    return {
+      success: true,
+      reason: "ALREADY_THERE",
+      member
+    };
   }
 
   await member.voice.setChannel(channelId);
+
+  return {
+    success: true,
+    reason: "MOVED",
+    member
+  };
 }
 
 // ==========================================
@@ -128,11 +148,9 @@ async function movePlayer(
 client.once(
   Events.ClientReady,
   readyClient => {
-
     console.log(
       `✅ Bot online as ${readyClient.user.tag}`
     );
-
   }
 );
 
@@ -151,7 +169,7 @@ client.on(
     try {
 
       // ======================================
-      // START
+      // /START
       // ======================================
 
       if (
@@ -170,7 +188,7 @@ client.on(
       }
 
       // ======================================
-      // ALIVE
+      // /ALIVE
       // ======================================
 
       if (
@@ -187,21 +205,45 @@ client.on(
           player.id
         );
 
-        await movePlayer(
-          interaction.guild,
-          player.id,
-          ALIVE_CHANNEL_ID
-        );
+        const result =
+          await movePlayer(
+            interaction.guild,
+            player.id,
+            ALIVE_CHANNEL_ID
+          );
+
+        if (
+          result.reason === "NOT_IN_VOICE"
+        ) {
+
+          await interaction.reply(
+            `🟢 ${player.username} is marked ALIVE.\n` +
+            `⚠️ They are not currently in a Voice Channel.`
+          );
+
+          return;
+        }
+
+        if (
+          result.reason === "ALREADY_THERE"
+        ) {
+
+          await interaction.reply(
+            `🟢 ${player.username} is already in Alive Voice.`
+          );
+
+          return;
+        }
 
         await interaction.reply(
-          `🟢 ${player.username} is now ALIVE.`
+          `🟢 ${player.username} moved to Alive Voice.`
         );
 
         return;
       }
 
       // ======================================
-      // DEAD
+      // /DEAD
       // ======================================
 
       if (
@@ -218,30 +260,65 @@ client.on(
           player.id
         );
 
-        await movePlayer(
-          interaction.guild,
-          player.id,
-          DEAD_CHANNEL_ID
-        );
+        const result =
+          await movePlayer(
+            interaction.guild,
+            player.id,
+            DEAD_CHANNEL_ID
+          );
+
+        if (
+          result.reason === "NOT_IN_VOICE"
+        ) {
+
+          await interaction.reply(
+            `💀 ${player.username} is marked DEAD.\n` +
+            `⚠️ They are not currently in a Voice Channel.`
+          );
+
+          return;
+        }
+
+        if (
+          result.reason === "ALREADY_THERE"
+        ) {
+
+          await interaction.reply(
+            `💀 ${player.username} is already in Dead Voice.`
+          );
+
+          return;
+        }
 
         await interaction.reply(
-          `💀 ${player.username} is now DEAD.`
+          `💀 ${player.username} moved to Dead Voice.`
         );
 
         return;
       }
 
       // ======================================
-      // STATUS
+      // /STATUS
       // ======================================
 
       if (
         interaction.commandName === "status"
       ) {
 
-        const players = [
+        const entries = [
           ...router.entries()
-        ]
+        ];
+
+        if (entries.length === 0) {
+
+          await interaction.reply(
+            "ℹ️ No players recorded."
+          );
+
+          return;
+        }
+
+        const players = entries
           .map(
             ([id, state]) =>
               `${
@@ -253,15 +330,14 @@ client.on(
           .join("\n");
 
         await interaction.reply(
-          players ||
-          "No players recorded."
+          `🎮 **Player Status**\n\n${players}`
         );
 
         return;
       }
 
       // ======================================
-      // END ROUND
+      // /END
       // ======================================
 
       if (
@@ -271,20 +347,22 @@ client.on(
         const guild =
           interaction.guild;
 
-        // Reset the game state
+        // Clear old round state
         router.endRound();
 
-        // Find players currently in voice
+        // Get ONLY members currently connected
+        // to a voice channel
         const members =
           guild.members.cache.filter(
             member =>
               !member.user.bot &&
-              member.voice.channel
+              member.voice.channelId !== null
           );
 
         let moved = 0;
+        let alreadyAlive = 0;
+        let failed = 0;
 
-        // Move everyone to Alive Voice
         for (
           const member
           of members.values()
@@ -292,6 +370,17 @@ client.on(
 
           try {
 
+            // Already in Alive Voice
+            if (
+              member.voice.channelId ===
+              ALIVE_CHANNEL_ID
+            ) {
+
+              alreadyAlive++;
+              continue;
+            }
+
+            // Move to Alive Voice
             await member.voice.setChannel(
               ALIVE_CHANNEL_ID
             );
@@ -300,19 +389,29 @@ client.on(
 
           } catch (error) {
 
+            failed++;
+
             console.error(
-              `Failed to move ${member.user.username}:`,
-              error
+              `❌ Failed to move ${member.user.username}:`,
+              error.message
             );
 
           }
-
         }
 
-        await interaction.reply(
-          `🏁 Round ended!\n` +
-          `🟢 ${moved} player(s) moved to Alive Voice.`
-        );
+        const totalAlive =
+          moved + alreadyAlive;
+
+        let reply =
+          `🏁 **Round ended!**\n\n` +
+          `🟢 Alive Voice: ${totalAlive} player(s)`;
+
+        if (failed > 0) {
+          reply +=
+            `\n⚠️ Could not move: ${failed} player(s)`;
+        }
+
+        await interaction.reply(reply);
 
         return;
       }
@@ -324,30 +423,39 @@ client.on(
         error
       );
 
-      const message =
-        "❌ Something went wrong. Check the Railway logs.";
+      const errorMessage =
+        "❌ Something went wrong. Check Railway logs.";
 
-      if (
-        interaction.replied ||
-        interaction.deferred
-      ) {
+      try {
 
-        await interaction.followUp({
-          content: message,
-          ephemeral: true
-        });
+        if (
+          interaction.replied ||
+          interaction.deferred
+        ) {
 
-      } else {
+          await interaction.followUp({
+            content: errorMessage,
+            ephemeral: true
+          });
 
-        await interaction.reply({
-          content: message,
-          ephemeral: true
-        });
+        } else {
+
+          await interaction.reply({
+            content: errorMessage,
+            ephemeral: true
+          });
+
+        }
+
+      } catch (replyError) {
+
+        console.error(
+          "❌ Could not send error reply:",
+          replyError
+        );
 
       }
-
     }
-
   }
 );
 
