@@ -112,6 +112,7 @@ async function movePlayer(
   userId,
   channelId
 ) {
+
   const member =
     await guild.members.fetch(userId);
 
@@ -120,7 +121,9 @@ async function movePlayer(
     member.voice.channelId
   );
 
+  // Player not connected
   if (!member.voice.channelId) {
+
     return {
       success: false,
       reason: "NOT_IN_VOICE",
@@ -128,9 +131,11 @@ async function movePlayer(
     };
   }
 
+  // Already there
   if (
     member.voice.channelId === channelId
   ) {
+
     return {
       success: true,
       reason: "ALREADY_THERE",
@@ -138,7 +143,10 @@ async function movePlayer(
     };
   }
 
-  await member.voice.setChannel(channelId);
+  // Move player
+  await member.voice.setChannel(
+    channelId
+  );
 
   return {
     success: true,
@@ -210,13 +218,15 @@ client.on(
         interaction.commandName === "start"
       ) {
 
-        router.startRound(
-          interaction.guild
-        );
+        const guild =
+          interaction.guild;
 
-        // Start the Voice Bridge
+        // Reset player states
+        router.startRound(guild);
+
+        // Start Voice Bridge
         bridge.connect(
-          interaction.guild,
+          guild,
           ALIVE_CHANNEL_ID,
           DEAD_CHANNEL_ID
         );
@@ -255,7 +265,8 @@ client.on(
           );
 
         if (
-          result.reason === "NOT_IN_VOICE"
+          result.reason ===
+          "NOT_IN_VOICE"
         ) {
 
           await interaction.reply(
@@ -267,7 +278,8 @@ client.on(
         }
 
         if (
-          result.reason === "ALREADY_THERE"
+          result.reason ===
+          "ALREADY_THERE"
         ) {
 
           await interaction.reply(
@@ -310,7 +322,8 @@ client.on(
           );
 
         if (
-          result.reason === "NOT_IN_VOICE"
+          result.reason ===
+          "NOT_IN_VOICE"
         ) {
 
           await interaction.reply(
@@ -322,7 +335,8 @@ client.on(
         }
 
         if (
-          result.reason === "ALREADY_THERE"
+          result.reason ===
+          "ALREADY_THERE"
         ) {
 
           await interaction.reply(
@@ -360,16 +374,17 @@ client.on(
           return;
         }
 
-        const players = entries
-          .map(
-            ([id, state]) =>
-              `${
-                state === "alive"
-                  ? "🟢"
-                  : "💀"
-              } <@${id}>`
-          )
-          .join("\n");
+        const players =
+          entries
+            .map(
+              ([id, state]) =>
+                `${
+                  state === "alive"
+                    ? "🟢"
+                    : "💀"
+                } <@${id}>`
+            )
+            .join("\n");
 
         await interaction.reply(
           `🎮 **Player Status**\n\n${players}`
@@ -389,12 +404,8 @@ client.on(
         const guild =
           interaction.guild;
 
-        // Stop Voice Bridge
-        bridge.destroy();
-
-        // Clear old game state
-        router.endRound();
-
+        // Get voice members BEFORE
+        // destroying the bridge
         const members =
           guild.members.cache.filter(
             member =>
@@ -406,6 +417,7 @@ client.on(
         let alreadyAlive = 0;
         let failed = 0;
 
+        // Move everyone to Alive Voice
         for (
           const member
           of members.values()
@@ -436,9 +448,25 @@ client.on(
               `❌ Failed to move ${member.user.username}:`,
               error.message
             );
-
           }
         }
+
+        // Stop Voice Bridge AFTER
+        // moving players
+        try {
+
+          bridge.destroy();
+
+        } catch (error) {
+
+          console.error(
+            "⚠️ Voice Bridge destroy error:",
+            error.message
+          );
+        }
+
+        // Clear game state
+        router.endRound();
 
         const totalAlive =
           moved + alreadyAlive;
@@ -448,11 +476,14 @@ client.on(
           `🟢 Alive Voice: ${totalAlive} player(s)`;
 
         if (failed > 0) {
+
           reply +=
             `\n⚠️ Could not move: ${failed} player(s)`;
         }
 
-        await interaction.reply(reply);
+        await interaction.reply(
+          reply
+        );
 
         return;
       }
@@ -485,7 +516,6 @@ client.on(
             content: errorMessage,
             ephemeral: true
           });
-
         }
 
       } catch (replyError) {
