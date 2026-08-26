@@ -12,7 +12,47 @@ import { VoiceRouter } from "./voiceRouter.js";
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
+const router = new VoiceRouter();
 
+const ALIVE_CHANNEL_ID = "1542086495815598080";
+const DEAD_CHANNEL_ID = "1327649537468403817";
+
+async function movePlayer(guild, userId, channelId) {
+  const member = await guild.members.fetch(userId);
+  await member.voice.setChannel(channelId);
+}
+
+if (interaction.commandName === "alive") {
+  const player = interaction.options.getUser("player");
+
+  router.setAlive(player.id);
+
+  await movePlayer(
+    interaction.guild,
+    player.id,
+    ALIVE_CHANNEL_ID
+  );
+
+  await interaction.reply(
+    `🟢 ${player.username} is now ALIVE.`
+  );
+}
+
+if (interaction.commandName === "dead") {
+  const player = interaction.options.getUser("player");
+
+  router.setDead(player.id);
+
+  await movePlayer(
+    interaction.guild,
+    player.id,
+    DEAD_CHANNEL_ID
+  );
+
+  await interaction.reply(
+    `💀 ${player.username} is now DEAD.`
+  );
+}
 if (!token || !clientId || !guildId) {
   throw new Error(
     "Missing DISCORD_TOKEN, CLIENT_ID or GUILD_ID."
