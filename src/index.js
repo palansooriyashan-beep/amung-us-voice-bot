@@ -17,7 +17,6 @@ import { VoiceBridge } from "./voiceBridge.js";
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
-const bridge = new VoiceBridge();
 
 if (!token || !clientId || !guildId) {
   throw new Error(
@@ -31,6 +30,13 @@ if (!token || !clientId || !guildId) {
 
 const ALIVE_CHANNEL_ID = "1542086495815598080";
 const DEAD_CHANNEL_ID = "1327649537468403817";
+
+// ==========================================
+// VOICE ROUTER + BRIDGE
+// ==========================================
+
+const router = new VoiceRouter();
+const bridge = new VoiceBridge();
 
 // ==========================================
 // SLASH COMMANDS
@@ -93,18 +99,9 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-
-    // IMPORTANT:
-    // Allows the bot to receive voice state updates.
     GatewayIntentBits.GuildVoiceStates
   ]
 });
-
-// ==========================================
-// VOICE ROUTER
-// ==========================================
-
-const router = new VoiceRouter();
 
 // ==========================================
 // MOVE PLAYER
@@ -115,7 +112,6 @@ async function movePlayer(
   userId,
   channelId
 ) {
-  // Fetch the latest member object
   const member =
     await guild.members.fetch(userId);
 
@@ -124,7 +120,6 @@ async function movePlayer(
     member.voice.channelId
   );
 
-  // Player is NOT connected to voice
   if (!member.voice.channelId) {
     return {
       success: false,
@@ -133,7 +128,6 @@ async function movePlayer(
     };
   }
 
-  // Already in requested channel
   if (
     member.voice.channelId === channelId
   ) {
@@ -144,7 +138,6 @@ async function movePlayer(
     };
   }
 
-  // Move player
   await member.voice.setChannel(channelId);
 
   return {
@@ -221,8 +214,16 @@ client.on(
           interaction.guild
         );
 
+        // Start the Voice Bridge
+        bridge.connect(
+          interaction.guild,
+          ALIVE_CHANNEL_ID,
+          DEAD_CHANNEL_ID
+        );
+
         await interaction.reply(
-          "🟢 Among Us round started! Everyone is ALIVE."
+          "🟢 Among Us round started! Everyone is ALIVE.\n" +
+          "🎙️ Voice Bridge connecting..."
         );
 
         return;
@@ -388,11 +389,12 @@ client.on(
         const guild =
           interaction.guild;
 
+        // Stop Voice Bridge
+        bridge.destroy();
+
         // Clear old game state
         router.endRound();
 
-        // Only members who are currently
-        // connected to voice
         const members =
           guild.members.cache.filter(
             member =>
