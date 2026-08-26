@@ -9,9 +9,9 @@ import {
 
 import { VoiceRouter } from "./voiceRouter.js";
 
-// ================================
+// ==========================================
 // ENVIRONMENT VARIABLES
-// ================================
+// ==========================================
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
@@ -23,16 +23,16 @@ if (!token || !clientId || !guildId) {
   );
 }
 
-// ================================
+// ==========================================
 // VOICE CHANNEL IDs
-// ================================
+// ==========================================
 
 const ALIVE_CHANNEL_ID = "1542086495815598080";
 const DEAD_CHANNEL_ID = "1327649537468403817";
 
-// ================================
+// ==========================================
 // SLASH COMMANDS
-// ================================
+// ==========================================
 
 const commands = [
   new SlashCommandBuilder()
@@ -68,11 +68,13 @@ const commands = [
     .setDescription("End the round")
 ].map(command => command.toJSON());
 
-// ================================
-// REGISTER COMMANDS
-// ================================
+// ==========================================
+// REGISTER SLASH COMMANDS
+// ==========================================
 
-const rest = new REST({ version: "10" }).setToken(token);
+const rest = new REST({
+  version: "10"
+}).setToken(token);
 
 await rest.put(
   Routes.applicationGuildCommands(clientId, guildId),
@@ -81,9 +83,9 @@ await rest.put(
   }
 );
 
-// ================================
+// ==========================================
 // DISCORD CLIENT
-// ================================
+// ==========================================
 
 const client = new Client({
   intents: [
@@ -92,18 +94,23 @@ const client = new Client({
   ]
 });
 
-// ================================
-// VOICE STATE MANAGER
-// ================================
+// ==========================================
+// VOICE ROUTER
+// ==========================================
 
 const router = new VoiceRouter();
 
-// ================================
-// MOVE PLAYER FUNCTION
-// ================================
+// ==========================================
+// MOVE PLAYER
+// ==========================================
 
-async function movePlayer(guild, userId, channelId) {
-  const member = await guild.members.fetch(userId);
+async function movePlayer(
+  guild,
+  userId,
+  channelId
+) {
+  const member =
+    await guild.members.fetch(userId);
 
   if (!member.voice.channel) {
     throw new Error(
@@ -114,152 +121,238 @@ async function movePlayer(guild, userId, channelId) {
   await member.voice.setChannel(channelId);
 }
 
-// ================================
+// ==========================================
 // BOT READY
-// ================================
+// ==========================================
 
-client.once(Events.ClientReady, readyClient => {
-  console.log(
-    `✅ Bot online as ${readyClient.user.tag}`
-  );
-});
+client.once(
+  Events.ClientReady,
+  readyClient => {
 
-// ================================
-// COMMAND HANDLER
-// ================================
+    console.log(
+      `✅ Bot online as ${readyClient.user.tag}`
+    );
 
-client.on(Events.InteractionCreate, async interaction => {
-
-  if (!interaction.isChatInputCommand()) {
-    return;
   }
+);
 
-  try {
+// ==========================================
+// INTERACTION HANDLER
+// ==========================================
 
-    // ============================
-    // START ROUND
-    // ============================
+client.on(
+  Events.InteractionCreate,
+  async interaction => {
 
-    if (interaction.commandName === "start") {
-
-      router.startRound(interaction.guild);
-
-      await interaction.reply(
-        "🟢 Among Us round started! Everyone is ALIVE."
-      );
-
+    if (!interaction.isChatInputCommand()) {
       return;
     }
 
-    // ============================
-    // PLAYER ALIVE
-    // ============================
+    try {
 
-    if (interaction.commandName === "alive") {
+      // ======================================
+      // START
+      // ======================================
 
-      const player =
-        interaction.options.getUser("player", true);
+      if (
+        interaction.commandName === "start"
+      ) {
 
-      router.setAlive(player.id);
+        router.startRound(
+          interaction.guild
+        );
 
-      await movePlayer(
-        interaction.guild,
-        player.id,
-        ALIVE_CHANNEL_ID
+        await interaction.reply(
+          "🟢 Among Us round started! Everyone is ALIVE."
+        );
+
+        return;
+      }
+
+      // ======================================
+      // ALIVE
+      // ======================================
+
+      if (
+        interaction.commandName === "alive"
+      ) {
+
+        const player =
+          interaction.options.getUser(
+            "player",
+            true
+          );
+
+        router.setAlive(
+          player.id
+        );
+
+        await movePlayer(
+          interaction.guild,
+          player.id,
+          ALIVE_CHANNEL_ID
+        );
+
+        await interaction.reply(
+          `🟢 ${player.username} is now ALIVE.`
+        );
+
+        return;
+      }
+
+      // ======================================
+      // DEAD
+      // ======================================
+
+      if (
+        interaction.commandName === "dead"
+      ) {
+
+        const player =
+          interaction.options.getUser(
+            "player",
+            true
+          );
+
+        router.setDead(
+          player.id
+        );
+
+        await movePlayer(
+          interaction.guild,
+          player.id,
+          DEAD_CHANNEL_ID
+        );
+
+        await interaction.reply(
+          `💀 ${player.username} is now DEAD.`
+        );
+
+        return;
+      }
+
+      // ======================================
+      // STATUS
+      // ======================================
+
+      if (
+        interaction.commandName === "status"
+      ) {
+
+        const players = [
+          ...router.entries()
+        ]
+          .map(
+            ([id, state]) =>
+              `${
+                state === "alive"
+                  ? "🟢"
+                  : "💀"
+              } <@${id}>`
+          )
+          .join("\n");
+
+        await interaction.reply(
+          players ||
+          "No players recorded."
+        );
+
+        return;
+      }
+
+      // ======================================
+      // END ROUND
+      // ======================================
+
+      if (
+        interaction.commandName === "end"
+      ) {
+
+        const guild =
+          interaction.guild;
+
+        // Reset the game state
+        router.endRound();
+
+        // Find players currently in voice
+        const members =
+          guild.members.cache.filter(
+            member =>
+              !member.user.bot &&
+              member.voice.channel
+          );
+
+        let moved = 0;
+
+        // Move everyone to Alive Voice
+        for (
+          const member
+          of members.values()
+        ) {
+
+          try {
+
+            await member.voice.setChannel(
+              ALIVE_CHANNEL_ID
+            );
+
+            moved++;
+
+          } catch (error) {
+
+            console.error(
+              `Failed to move ${member.user.username}:`,
+              error
+            );
+
+          }
+
+        }
+
+        await interaction.reply(
+          `🏁 Round ended!\n` +
+          `🟢 ${moved} player(s) moved to Alive Voice.`
+        );
+
+        return;
+      }
+
+    } catch (error) {
+
+      console.error(
+        "❌ Command error:",
+        error
       );
 
-      await interaction.reply(
-        `🟢 ${player.username} is now ALIVE.`
-      );
+      const message =
+        "❌ Something went wrong. Check the Railway logs.";
 
-      return;
+      if (
+        interaction.replied ||
+        interaction.deferred
+      ) {
+
+        await interaction.followUp({
+          content: message,
+          ephemeral: true
+        });
+
+      } else {
+
+        await interaction.reply({
+          content: message,
+          ephemeral: true
+        });
+
+      }
+
     }
 
-    // ============================
-    // PLAYER DEAD
-    // ============================
-
-    if (interaction.commandName === "dead") {
-
-      const player =
-        interaction.options.getUser("player", true);
-
-      router.setDead(player.id);
-
-      await movePlayer(
-        interaction.guild,
-        player.id,
-        DEAD_CHANNEL_ID
-      );
-
-      await interaction.reply(
-        `💀 ${player.username} is now DEAD.`
-      );
-
-      return;
-    }
-
-    // ============================
-    // STATUS
-    // ============================
-
-    if (interaction.commandName === "status") {
-
-      const players = [...router.entries()]
-        .map(([id, state]) =>
-          `${state === "alive" ? "🟢" : "💀"} <@${id}>`
-        )
-        .join("\n");
-
-      await interaction.reply(
-        players || "No players recorded."
-      );
-
-      return;
-    }
-
-    // ============================
-    // END ROUND
-    // ============================
-
-    if (interaction.commandName === "end") {
-
-      router.endRound();
-
-      await interaction.reply(
-        "🏁 Among Us round ended."
-      );
-
-      return;
-    }
-
-  } catch (error) {
-
-    console.error("❌ Error:", error);
-
-    const message =
-      "❌ Something went wrong. Check the Railway logs.";
-
-    if (interaction.replied || interaction.deferred) {
-
-      await interaction.followUp({
-        content: message,
-        ephemeral: true
-      });
-
-    } else {
-
-      await interaction.reply({
-        content: message,
-        ephemeral: true
-      });
-
-    }
   }
-});
+);
 
-// ================================
+// ==========================================
 // LOGIN
-// ================================
+// ==========================================
 
 client.login(token);
