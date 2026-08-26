@@ -8,14 +8,23 @@ export class VoiceBridge {
   constructor() {
     this.aliveConnection = null;
     this.deadConnection = null;
+
     this.subscriptions = new Map();
+
     this.connected = false;
     this.speakingHandler = null;
   }
 
+  // ==========================================
+  // CONNECT ALIVE + DEAD
+  // ==========================================
+
   connect(guild, aliveChannelId, deadChannelId) {
+
     if (this.connected) {
-      console.log("ℹ️ Voice Bridge already connected.");
+      console.log(
+        "ℹ️ Voice Bridge already connected."
+      );
       return;
     }
 
@@ -28,7 +37,7 @@ export class VoiceBridge {
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
-      selfMute: false
+      selfMute: true
     });
 
     // ==========================================
@@ -40,7 +49,7 @@ export class VoiceBridge {
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
-      selfMute: false
+      selfMute: true
     });
 
     this.connected = true;
@@ -52,8 +61,22 @@ export class VoiceBridge {
     this.aliveConnection.on(
       VoiceConnectionStatus.Ready,
       () => {
+
         console.log(
           "🎙️ Alive Voice Bridge: READY"
+        );
+
+        const receiver =
+          this.aliveConnection.receiver;
+
+        console.log(
+          "🎧 Receiver exists:",
+          !!receiver
+        );
+
+        console.log(
+          "🎧 Speaking emitter exists:",
+          !!receiver.speaking
         );
 
         this.startAudioForwarding();
@@ -67,6 +90,7 @@ export class VoiceBridge {
     this.deadConnection.on(
       VoiceConnectionStatus.Ready,
       () => {
+
         console.log(
           "💀 Dead Voice Bridge: READY"
         );
@@ -74,21 +98,27 @@ export class VoiceBridge {
     );
 
     // ==========================================
-    // DISCONNECT
+    // ALIVE DISCONNECTED
     // ==========================================
 
     this.aliveConnection.on(
       VoiceConnectionStatus.Disconnected,
       () => {
+
         console.log(
           "⚠️ Alive Voice Bridge disconnected."
         );
       }
     );
 
+    // ==========================================
+    // DEAD DISCONNECTED
+    // ==========================================
+
     this.deadConnection.on(
       VoiceConnectionStatus.Disconnected,
       () => {
+
         console.log(
           "⚠️ Dead Voice Bridge disconnected."
         );
@@ -102,16 +132,20 @@ export class VoiceBridge {
 
   // ==========================================
   // AUDIO FORWARDING
+  // ALIVE → DEAD
   // ==========================================
 
   startAudioForwarding() {
+
     if (
       !this.aliveConnection ||
       !this.deadConnection
     ) {
+
       console.log(
-        "❌ Audio forwarding cannot start."
+        "❌ Audio forwarding: connections missing."
       );
+
       return;
     }
 
@@ -122,160 +156,157 @@ export class VoiceBridge {
     const receiver =
       this.aliveConnection.receiver;
 
-    console.log(
-      "🎧 Voice receiver initialized."
-    );
-
     // ==========================================
-    // SPEAKING START
+    // SPEAKING EVENT
     // ==========================================
 
-    this.speakingHandler = (userId) => {
+    this.speakingHandler =
+      userId => {
 
-      console.log(
-        `🎙️ ALIVE SPEAKER DETECTED: ${userId}`
-      );
-
-      // Don't create duplicate stream
-      if (
-        this.subscriptions.has(userId)
-      ) {
         console.log(
-          `ℹ️ Already receiving audio from ${userId}`
+          `🔥 SPEAKING START EVENT: ${userId}`
         );
-        return;
-      }
 
-      let stream;
+        // Prevent duplicate stream
+        if (
+          this.subscriptions.has(userId)
+        ) {
 
-      try {
+          console.log(
+            `ℹ️ Already receiving ${userId}`
+          );
 
-        stream = receiver.subscribe(
+          return;
+        }
+
+        let stream;
+
+        try {
+
+          stream =
+            receiver.subscribe(
+              userId,
+              {
+                end: {
+                  behavior:
+                    EndBehaviorType.AfterSilence,
+
+                  duration: 250
+                }
+              }
+            );
+
+        } catch (error) {
+
+          console.error(
+            `❌ Subscribe error (${userId}):`,
+            error.message
+          );
+
+          return;
+        }
+
+        this.subscriptions.set(
           userId,
-          {
-            end: {
-              behavior:
-                EndBehaviorType.AfterSilence,
+          stream
+        );
 
-              duration: 250
+        console.log(
+          `🎧 AUDIO STREAM STARTED: ${userId}`
+        );
+
+        let packetCount = 0;
+
+        // ========================================
+        // RECEIVE OPUS
+        // ========================================
+
+        stream.on(
+          "data",
+          packet => {
+
+            packetCount++;
+
+            if (packetCount === 1) {
+
+              console.log(
+                `📡 FIRST OPUS PACKET: ${userId}`
+              );
             }
-          }
-        );
 
-      } catch (error) {
+            if (
+              packetCount % 50 === 0
+            ) {
 
-        console.error(
-          `❌ Subscribe failed for ${userId}:`,
-          error.message
-        );
+              console.log(
+                `📡 ${userId}: ${packetCount} packets`
+              );
+            }
 
-        return;
-      }
+            if (
+              !this.deadConnection
+            ) {
+              return;
+            }
 
-      this.subscriptions.set(
-        userId,
-        stream
-      );
+            try {
 
-      console.log(
-        `🎧 AUDIO STREAM STARTED: ${userId}`
-      );
-
-      let packetCount = 0;
-
-      // ========================================
-      // OPUS PACKETS
-      // ========================================
-
-      stream.on(
-        "data",
-        packet => {
-
-          packetCount++;
-
-          if (packetCount === 1) {
-            console.log(
-              `📡 FIRST OPUS PACKET RECEIVED: ${userId}`
-            );
-          }
-
-          if (
-            packetCount % 50 === 0
-          ) {
-            console.log(
-              `📡 ${userId}: ${packetCount} Opus packets`
-            );
-          }
-
-          if (
-            !this.deadConnection
-          ) {
-            return;
-          }
-
-          try {
-
-            const result =
               this.deadConnection.playOpusPacket(
                 packet
               );
 
-            if (
-              result === false
-            ) {
-              console.log(
-                `⚠️ Dead connection rejected packet from ${userId}`
+            } catch (error) {
+
+              console.error(
+                `❌ PLAY OPUS ERROR (${userId}):`,
+                error.message
               );
             }
+          }
+        );
 
-          } catch (error) {
+        // ========================================
+        // STREAM END
+        // ========================================
 
-            console.error(
-              `❌ PLAY OPUS ERROR (${userId}):`,
-              error.message
+        stream.once(
+          "end",
+          () => {
+
+            console.log(
+              `🔇 AUDIO STREAM ENDED: ${userId} | ` +
+              `${packetCount} packets`
+            );
+
+            this.subscriptions.delete(
+              userId
             );
           }
-        }
-      );
+        );
 
-      // ========================================
-      // STREAM END
-      // ========================================
+        // ========================================
+        // STREAM ERROR
+        // ========================================
 
-      stream.once(
-        "end",
-        () => {
+        stream.once(
+          "error",
+          error => {
 
-          console.log(
-            `🔇 AUDIO STREAM ENDED: ${userId} | ` +
-            `${packetCount} packets`
-          );
+            console.error(
+              `❌ AUDIO STREAM ERROR (${userId}):`,
+              error.message
+            );
 
-          this.subscriptions.delete(
-            userId
-          );
-        }
-      );
+            this.subscriptions.delete(
+              userId
+            );
+          }
+        );
+      };
 
-      // ========================================
-      // STREAM ERROR
-      // ========================================
-
-      stream.once(
-        "error",
-        error => {
-
-          console.error(
-            `❌ AUDIO STREAM ERROR (${userId}):`,
-            error.message
-          );
-
-          this.subscriptions.delete(
-            userId
-          );
-        }
-      );
-    };
+    // ==========================================
+    // ATTACH SPEAKING LISTENER
+    // ==========================================
 
     receiver.speaking.on(
       "start",
@@ -288,7 +319,7 @@ export class VoiceBridge {
   }
 
   // ==========================================
-  // STOP AUDIO
+  // STOP FORWARDING
   // ==========================================
 
   stopAudioForwarding() {
@@ -306,6 +337,7 @@ export class VoiceBridge {
 
     this.speakingHandler = null;
 
+    // Destroy streams
     for (
       const stream
       of this.subscriptions.values()
