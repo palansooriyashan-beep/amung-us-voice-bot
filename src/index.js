@@ -90,7 +90,11 @@ await rest.put(
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+
+    // IMPORTANT:
+    // Allows the bot to receive voice state updates.
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
@@ -109,10 +113,16 @@ async function movePlayer(
   userId,
   channelId
 ) {
+  // Fetch the latest member object
   const member =
     await guild.members.fetch(userId);
 
-  // Player is not in a voice channel
+  console.log(
+    `🎙️ ${member.user.username} voice channel:`,
+    member.voice.channelId
+  );
+
+  // Player is NOT connected to voice
   if (!member.voice.channelId) {
     return {
       success: false,
@@ -121,7 +131,7 @@ async function movePlayer(
     };
   }
 
-  // Player is already in target channel
+  // Already in requested channel
   if (
     member.voice.channelId === channelId
   ) {
@@ -132,6 +142,7 @@ async function movePlayer(
     };
   }
 
+  // Move player
   await member.voice.setChannel(channelId);
 
   return {
@@ -148,8 +159,36 @@ async function movePlayer(
 client.once(
   Events.ClientReady,
   readyClient => {
+
     console.log(
       `✅ Bot online as ${readyClient.user.tag}`
+    );
+
+    console.log(
+      "🎙️ Voice state tracking enabled."
+    );
+  }
+);
+
+// ==========================================
+// VOICE STATE UPDATE
+// ==========================================
+
+client.on(
+  Events.VoiceStateUpdate,
+  (oldState, newState) => {
+
+    const member =
+      newState.member;
+
+    if (!member || member.user.bot) {
+      return;
+    }
+
+    console.log(
+      `🎙️ Voice update: ${member.user.username} | ` +
+      `${oldState.channelId ?? "NONE"} → ` +
+      `${newState.channelId ?? "NONE"}`
     );
   }
 );
@@ -218,7 +257,7 @@ client.on(
 
           await interaction.reply(
             `🟢 ${player.username} is marked ALIVE.\n` +
-            `⚠️ They are not currently in a Voice Channel.`
+            `⚠️ They are not currently connected to a Voice Channel.`
           );
 
           return;
@@ -273,7 +312,7 @@ client.on(
 
           await interaction.reply(
             `💀 ${player.username} is marked DEAD.\n` +
-            `⚠️ They are not currently in a Voice Channel.`
+            `⚠️ They are not currently connected to a Voice Channel.`
           );
 
           return;
@@ -347,11 +386,11 @@ client.on(
         const guild =
           interaction.guild;
 
-        // Clear old round state
+        // Clear old game state
         router.endRound();
 
-        // Get ONLY members currently connected
-        // to a voice channel
+        // Only members who are currently
+        // connected to voice
         const members =
           guild.members.cache.filter(
             member =>
@@ -370,7 +409,6 @@ client.on(
 
           try {
 
-            // Already in Alive Voice
             if (
               member.voice.channelId ===
               ALIVE_CHANNEL_ID
@@ -380,7 +418,6 @@ client.on(
               continue;
             }
 
-            // Move to Alive Voice
             await member.voice.setChannel(
               ALIVE_CHANNEL_ID
             );
@@ -453,7 +490,6 @@ client.on(
           "❌ Could not send error reply:",
           replyError
         );
-
       }
     }
   }
