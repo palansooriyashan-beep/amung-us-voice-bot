@@ -7,28 +7,35 @@ export class VoiceBridge {
   constructor() {
     this.aliveConnection = null;
     this.deadConnection = null;
+    this.connected = false;
   }
 
   connect(guild, aliveChannelId, deadChannelId) {
 
-    // ==============================
+    // Prevent duplicate connections
+    if (this.connected) {
+      console.log(
+        "ℹ️ Voice Bridge is already connected."
+      );
+      return;
+    }
+
+    // ==========================================
     // ALIVE VOICE CONNECTION
-    // ==============================
+    // ==========================================
 
     this.aliveConnection = joinVoiceChannel({
       channelId: aliveChannelId,
       guildId: guild.id,
       adapterCreator: guild.voiceAdapterCreator,
 
-      // IMPORTANT:
-      // Bot must be able to receive audio.
       selfDeaf: false,
       selfMute: false
     });
 
-    // ==============================
+    // ==========================================
     // DEAD VOICE CONNECTION
-    // ==============================
+    // ==========================================
 
     this.deadConnection = joinVoiceChannel({
       channelId: deadChannelId,
@@ -39,6 +46,12 @@ export class VoiceBridge {
       selfMute: false
     });
 
+    this.connected = true;
+
+    // ==========================================
+    // ALIVE READY
+    // ==========================================
+
     this.aliveConnection.on(
       VoiceConnectionStatus.Ready,
       () => {
@@ -47,6 +60,10 @@ export class VoiceBridge {
         );
       }
     );
+
+    // ==========================================
+    // DEAD READY
+    // ==========================================
 
     this.deadConnection.on(
       VoiceConnectionStatus.Ready,
@@ -57,6 +74,10 @@ export class VoiceBridge {
       }
     );
 
+    // ==========================================
+    // ALIVE DISCONNECTED
+    // ==========================================
+
     this.aliveConnection.on(
       VoiceConnectionStatus.Disconnected,
       () => {
@@ -66,6 +87,10 @@ export class VoiceBridge {
       }
     );
 
+    // ==========================================
+    // DEAD DISCONNECTED
+    // ==========================================
+
     this.deadConnection.on(
       VoiceConnectionStatus.Disconnected,
       () => {
@@ -74,19 +99,88 @@ export class VoiceBridge {
         );
       }
     );
+
+    console.log(
+      "🎙️ Voice Bridge connections started."
+    );
   }
+
+  // ==========================================
+  // SAFE DESTROY
+  // ==========================================
 
   destroy() {
 
+    // Already stopped
+    if (
+      !this.aliveConnection &&
+      !this.deadConnection
+    ) {
+
+      this.connected = false;
+
+      console.log(
+        "ℹ️ Voice Bridge already stopped."
+      );
+
+      return;
+    }
+
+    // ==========================================
+    // DESTROY ALIVE CONNECTION
+    // ==========================================
+
     if (this.aliveConnection) {
-      this.aliveConnection.destroy();
+
+      try {
+
+        if (
+          this.aliveConnection.state.status !==
+          VoiceConnectionStatus.Destroyed
+        ) {
+
+          this.aliveConnection.destroy();
+
+        }
+
+      } catch (error) {
+
+        console.log(
+          "ℹ️ Alive connection already destroyed."
+        );
+      }
+
       this.aliveConnection = null;
     }
 
+    // ==========================================
+    // DESTROY DEAD CONNECTION
+    // ==========================================
+
     if (this.deadConnection) {
-      this.deadConnection.destroy();
+
+      try {
+
+        if (
+          this.deadConnection.state.status !==
+          VoiceConnectionStatus.Destroyed
+        ) {
+
+          this.deadConnection.destroy();
+
+        }
+
+      } catch (error) {
+
+        console.log(
+          "ℹ️ Dead connection already destroyed."
+        );
+      }
+
       this.deadConnection = null;
     }
+
+    this.connected = false;
 
     console.log(
       "🛑 Voice Bridge stopped."
