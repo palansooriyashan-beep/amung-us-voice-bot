@@ -241,4 +241,99 @@ client.on(
       ) {
 
         const entries =
-          [...playerState
+          [...playerState.entries()];
+
+        if (entries.length === 0) {
+
+          await interaction.reply(
+            "ℹ️ No players recorded."
+          );
+
+          return;
+        }
+
+        const text =
+          entries
+            .map(
+              ([id, state]) =>
+                `${state === "alive" ? "🟢" : "💀"} <@${id}>`
+            )
+            .join("\n");
+
+        await interaction.reply(
+          `🎮 **Player Status**\n\n${text}`
+        );
+
+        return;
+      }
+
+      // ======================================
+      // END
+      // ======================================
+
+      if (
+        interaction.commandName === "end"
+      ) {
+
+        voiceRelay.stop();
+
+        await voiceManager.end(
+          interaction.guild
+        );
+
+        playerState.clear();
+
+        await interaction.reply(
+          "🏁 **Round ended!**\n" +
+          "All players reset."
+        );
+
+        return;
+      }
+
+    } catch (error) {
+
+      console.error(
+        "❌ Command error:",
+        error
+      );
+
+      const message =
+        "❌ Something went wrong. Check Railway logs.";
+
+      try {
+
+        if (
+          interaction.replied ||
+          interaction.deferred
+        ) {
+
+          await interaction.followUp({
+            content: message,
+            ephemeral: true
+          });
+
+        } else {
+
+          await interaction.reply({
+            content: message,
+            ephemeral: true
+          });
+        }
+
+      } catch (replyError) {
+
+        console.error(
+          "❌ Reply error:",
+          replyError
+        );
+      }
+    }
+  }
+);
+
+// ==========================================
+// LOGIN
+// ==========================================
+
+client.login(token);
