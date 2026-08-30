@@ -23,6 +23,14 @@ export class PlayerState {
     return this.players.get(userId) ?? "alive";
   }
 
+  isAlive(userId) {
+    return this.get(userId) === "alive";
+  }
+
+  isDead(userId) {
+    return this.get(userId) === "dead";
+  }
+
   entries() {
     return this.players.entries();
   }
