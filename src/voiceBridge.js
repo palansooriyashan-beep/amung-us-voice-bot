@@ -1,642 +1,828 @@
 import {
-  joinVoiceChannel,
-  VoiceConnectionStatus
+joinVoiceChannel,
+VoiceConnectionStatus,
+createAudioPlayer,
+createAudioResource,
+StreamType,
+NoSubscriberBehavior
 } from "@discordjs/voice";
+
+import prism from "prism-media";
+import { PassThrough } from "node:stream";
 
 export class VoiceBridge {
 
-  constructor() {
-    this.aliveConnection = null;
-    this.deadConnection = null;
+constructor() {
+this.aliveConnection = null;
+this.deadConnection = null;
 
-    this.speakingHandler = null;
-    this.speakingStopHandler = null;
+this.alivePlayer = null;
+this.outputStream = null;
 
-    this.connected = false;
+this.speakingHandler = null;
+this.speakingStopHandler = null;
+
+this.subscriptions = new Map();
+this.audioFrames = new Map();
+
+this.mixTimer = null;
+
+this.connected = false;
+
+}
+
+// ==========================================
+// CONNECT
+// ==========================================
+
+connect(guild, aliveChannelId, deadChannelId) {
+
+if (this.connected) {
+  console.log("ℹ️ Voice Bridge already connected.");
+  return;
+}
+
+console.log("🚀 Starting Voice Bridge...");
+
+// ========================================
+// ALIVE CONNECTION
+// ========================================
+
+this.aliveConnection = joinVoiceChannel({
+  channelId: aliveChannelId,
+  guildId: guild.id,
+  adapterCreator: guild.voiceAdapterCreator,
+
+  selfDeaf: false,
+  selfMute: true,
+
+  debug: true
+});
+
+// ========================================
+// DEAD CONNECTION
+// ========================================
+
+this.deadConnection = joinVoiceChannel({
+  channelId: deadChannelId,
+  guildId: guild.id,
+  adapterCreator: guild.voiceAdapterCreator,
+
+  selfDeaf: false,
+  selfMute: false,
+
+  debug: true
+});
+
+this.connected = true;
+
+this.attachConnectionLogs(
+  this.aliveConnection,
+  "ALIVE"
+);
+
+this.attachConnectionLogs(
+  this.deadConnection,
+  "DEAD"
+);
+
+// ========================================
+// ALIVE READY
+// ========================================
+
+this.aliveConnection.on(
+  VoiceConnectionStatus.Ready,
+  () => {
+
+    console.log("======================================");
+    console.log("🎙️ ALIVE CONNECTION READY");
+    console.log(
+      "🎧 ALIVE RECEIVER:",
+      !!this.aliveConnection.receiver
+    );
+    console.log("======================================");
+
+    this.setupAliveReceiver();
   }
+);
 
-  // ==========================================
-  // CONNECT
-  // ==========================================
+// ========================================
+// DEAD READY
+// ========================================
 
-  connect(guild, aliveChannelId, deadChannelId) {
+this.deadConnection.on(
+  VoiceConnectionStatus.Ready,
+  () => {
 
-    if (this.connected) {
-      console.log(
-        "ℹ️ Voice Bridge already connected."
-      );
+    console.log("======================================");
+    console.log("💀 DEAD CONNECTION READY");
+    console.log(
+      "🔊 DEAD AUDIO OUTPUT READY"
+    );
+    console.log("======================================");
 
+    this.setupDeadOutput();
+  }
+);
+
+console.log(
+  "🎙️ Voice Bridge connections created."
+);
+
+}
+
+// ==========================================
+// ALIVE RECEIVER
+// ==========================================
+
+setupAliveReceiver() {
+
+if (!this.aliveConnection) {
+  return;
+}
+
+const receiver =
+  this.aliveConnection.receiver;
+
+if (!receiver) {
+  console.log(
+    "❌ Alive receiver unavailable."
+  );
+  return;
+}
+
+// Remove old handlers
+if (this.speakingHandler) {
+  receiver.speaking.off(
+    "start",
+    this.speakingHandler
+  );
+}
+
+if (this.speakingStopHandler) {
+  receiver.speaking.off(
+    "end",
+    this.speakingStopHandler
+  );
+}
+
+// ========================================
+// SPEAKING START
+// ========================================
+
+this.speakingHandler =
+  userId => {
+
+    console.log(
+      `🎤 ALIVE SPEAKING: ${userId}`
+    );
+
+    // Already subscribed
+    if (this.subscriptions.has(userId)) {
       return;
     }
 
+    try {
+
+      const opusStream =
+        receiver.subscribe(
+          userId,
+          {
+            end: {
+              behavior: "silence",
+              duration: 100
+            }
+          }
+        );
+
+      // ==================================
+      // OPUS → PCM DECODER
+      // ==================================
+
+      const decoder =
+        new prism.opus.Decoder({
+          frameSize: 960,
+          channels: 2,
+          rate: 48000
+        });
+
+      const subscription = {
+        opusStream,
+        decoder
+      };
+
+      this.subscriptions.set(
+        userId,
+        subscription
+      );
+
+      // ==================================
+      // DECODE AUDIO
+      // ==================================
+
+      opusStream
+        .pipe(decoder)
+        .on(
+          "data",
+          pcm => {
+
+            /*
+             * Discord sends approximately
+             * 20ms PCM frames.
+             *
+             * Keep the latest frame from
+             * each Alive speaker.
+             */
+
+            this.audioFrames.set(
+              userId,
+              Buffer.from(pcm)
+            );
+          }
+        );
+
+      opusStream.on(
+        "end",
+        () => {
+
+          console.log(
+            `🛑 ALIVE AUDIO END: ${userId}`
+          );
+
+          this.removeSpeaker(userId);
+        }
+      );
+
+      opusStream.on(
+        "error",
+        error => {
+
+          console.error(
+            `❌ Audio stream error ${userId}:`,
+            error.message
+          );
+
+          this.removeSpeaker(userId);
+        }
+      );
+
+      decoder.on(
+        "error",
+        error => {
+
+          console.error(
+            `❌ Decoder error ${userId}:`,
+            error.message
+          );
+
+          this.removeSpeaker(userId);
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        "❌ Could not subscribe to Alive user:",
+        error
+      );
+    }
+  };
+
+// ========================================
+// SPEAKING END
+// ========================================
+
+this.speakingStopHandler =
+  userId => {
+
     console.log(
-      "🚀 Starting Voice Bridge..."
+      `🛑 ALIVE STOP: ${userId}`
     );
 
-    // ========================================
-    // ALIVE CONNECTION
-    // ========================================
+    /*
+     * Do not immediately destroy the
+     * subscription. Discord's receiver
+     * stream handles the silence/end.
+     */
+  };
 
-    this.aliveConnection = joinVoiceChannel({
-      channelId: aliveChannelId,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
+receiver.speaking.on(
+  "start",
+  this.speakingHandler
+);
 
-      // IMPORTANT FOR RECEIVE
-      selfDeaf: false,
-      selfMute: true,
+receiver.speaking.on(
+  "end",
+  this.speakingStopHandler
+);
 
-      // Enable voice debugging
-      debug: true
+console.log(
+  "🎧 Alive receiver ready."
+);
+
+}
+
+// ==========================================
+// DEAD OUTPUT
+// ==========================================
+
+setupDeadOutput() {
+
+if (!this.deadConnection) {
+  return;
+}
+
+// ========================================
+// AUDIO PLAYER
+// ========================================
+
+this.alivePlayer =
+  createAudioPlayer({
+    behaviors: {
+      noSubscriber:
+        NoSubscriberBehavior.Play
+    }
+  });
+
+this.alivePlayer.on(
+  "error",
+  error => {
+
+    console.error(
+      "❌ DEAD OUTPUT PLAYER ERROR:",
+      error
+    );
+  }
+);
+
+this.alivePlayer.on(
+  "stateChange",
+  (oldState, newState) => {
+
+    console.log(
+      `🔊 DEAD OUTPUT PLAYER: ` +
+      `${oldState.status} → ${newState.status}`
+    );
+  }
+);
+
+// ========================================
+// OUTPUT STREAM
+// ========================================
+
+this.outputStream =
+  new PassThrough();
+
+const resource =
+  createAudioResource(
+    this.outputStream,
+    {
+      inputType: StreamType.Opus
+    }
+  );
+
+this.alivePlayer.play(resource);
+
+// ========================================
+// BOT TRANSMITS INTO DEAD CHANNEL
+// ========================================
+
+this.deadConnection.subscribe(
+  this.alivePlayer
+);
+
+console.log(
+  "🔊 Dead output player subscribed."
+);
+
+// ========================================
+// START MIXER
+// ========================================
+
+this.startMixer();
+
+}
+
+// ==========================================
+// AUDIO MIXER
+// ==========================================
+
+startMixer() {
+
+if (this.mixTimer) {
+  return;
+}
+
+/*
+ * 48kHz stereo
+ * 16-bit PCM
+ * 20ms = 3840 bytes
+ */
+
+const FRAME_SIZE = 3840;
+
+this.mixTimer =
+  setInterval(
+    () => {
+
+      if (!this.outputStream) {
+        return;
+      }
+
+      const frames =
+        [...this.audioFrames.values()];
+
+      if (frames.length === 0) {
+
+        /*
+         * Send silence when nobody speaks.
+         */
+
+        const silence =
+          Buffer.alloc(FRAME_SIZE);
+
+        this.writeEncodedFrame(
+          silence
+        );
+
+        return;
+      }
+
+      const mixed =
+        Buffer.alloc(FRAME_SIZE);
+
+      // ==================================
+      // MIX ALL ALIVE SPEAKERS
+      // ==================================
+
+      for (const frame of frames) {
+
+        const length =
+          Math.min(
+            frame.length,
+            FRAME_SIZE
+          );
+
+        for (
+          let i = 0;
+          i < length - 1;
+          i += 2
+        ) {
+
+          const current =
+            mixed.readInt16LE(i);
+
+          const incoming =
+            frame.readInt16LE(i);
+
+          let value =
+            current + incoming;
+
+          /*
+           * Prevent integer overflow.
+           */
+
+          if (value > 32767) {
+            value = 32767;
+          }
+
+          if (value < -32768) {
+            value = -32768;
+          }
+
+          mixed.writeInt16LE(
+            value,
+            i
+          );
+        }
+      }
+
+      this.writeEncodedFrame(
+        mixed
+      );
+
+      /*
+       * Frames are consumed every
+       * 20ms.
+       */
+      this.audioFrames.clear();
+
+    },
+    20
+  );
+
+console.log(
+  "🎚️ Audio mixer started."
+);
+
+}
+
+// ==========================================
+// PCM → OPUS
+// ==========================================
+
+writeEncodedFrame(pcm) {
+
+if (!this.outputStream) {
+  return;
+}
+
+try {
+
+  const encoder =
+    new prism.opus.Encoder({
+      frameSize: 960,
+      channels: 2,
+      rate: 48000
     });
 
-    // ========================================
-    // DEAD CONNECTION
-    // ========================================
+  const opus =
+    encoder._transform
+    ? null
+    : null;
 
-    this.deadConnection = joinVoiceChannel({
-      channelId: deadChannelId,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
+  /*
+   * Use a temporary encoder for
+   * the PCM frame.
+   */
 
-      selfDeaf: false,
-      selfMute: true,
+  const chunks = [];
 
-      // Enable voice debugging
-      debug: true
-    });
+  encoder.on(
+    "data",
+    chunk => {
+      chunks.push(
+        Buffer.from(chunk)
+      );
+    }
+  );
 
-    this.connected = true;
+  encoder.on(
+    "end",
+    () => {
 
-    // ========================================
-    // ALIVE EVENTS
-    // ========================================
+      if (chunks.length > 0) {
 
-    this.attachConnectionLogs(
-      this.aliveConnection,
-      "ALIVE"
-    );
+        const packet =
+          Buffer.concat(chunks);
 
-    // ========================================
-    // DEAD EVENTS
-    // ========================================
-
-    this.attachConnectionLogs(
-      this.deadConnection,
-      "DEAD"
-    );
-
-    // ========================================
-    // ALIVE READY
-    // ========================================
-
-    this.aliveConnection.on(
-      VoiceConnectionStatus.Ready,
-      () => {
-
-        console.log(
-          "======================================"
-        );
-
-        console.log(
-          "🎙️ ALIVE CONNECTION READY"
-        );
-
-        console.log(
-          "🎧 ALIVE RECEIVER AVAILABLE:",
-          !!this.aliveConnection.receiver
-        );
-
-        console.log(
-          "======================================"
-        );
-
-        this.setupReceiverDiagnostic();
-      }
-    );
-
-    // ========================================
-    // DEAD READY
-    // ========================================
-
-    this.deadConnection.on(
-      VoiceConnectionStatus.Ready,
-      () => {
-
-        console.log(
-          "======================================"
-        );
-
-        console.log(
-          "💀 DEAD CONNECTION READY"
-        );
-
-        console.log(
-          "🎧 DEAD RECEIVER AVAILABLE:",
-          !!this.deadConnection.receiver
-        );
-
-        console.log(
-          "======================================"
+        this.outputStream.write(
+          packet
         );
       }
-    );
+    }
+  );
+
+  encoder.end(pcm);
+
+} catch (error) {
+
+  console.error(
+    "❌ Opus encoder error:",
+    error.message
+  );
+}
+
+}
+
+// ==========================================
+// REMOVE SPEAKER
+// ==========================================
+
+removeSpeaker(userId) {
+
+this.audioFrames.delete(
+  userId
+);
+
+const subscription =
+  this.subscriptions.get(
+    userId
+  );
+
+if (subscription) {
+
+  try {
+    subscription.opusStream.destroy();
+  } catch {}
+
+  try {
+    subscription.decoder.destroy();
+  } catch {}
+}
+
+this.subscriptions.delete(
+  userId
+);
+
+}
+
+// ==========================================
+// CONNECTION LOGS
+// ==========================================
+
+attachConnectionLogs(
+connection,
+name
+) {
+
+connection.on(
+  "debug",
+  message => {
 
     console.log(
-      "🎙️ Voice Bridge connections created."
+      `🔍 [${name}] ${message}`
     );
   }
+);
 
-  // ==========================================
-  // CONNECTION DEBUG LOGS
-  // ==========================================
+connection.on(
+  "error",
+  error => {
 
-  attachConnectionLogs(
-    connection,
-    name
-  ) {
-
-    // ----------------------------------------
-    // DEBUG
-    // ----------------------------------------
-
-    connection.on(
-      "debug",
-      message => {
-
-        console.log(
-          `🔍 [${name} VOICE DEBUG] ${message}`
-        );
-      }
-    );
-
-    // ----------------------------------------
-    // ERROR
-    // ----------------------------------------
-
-    connection.on(
-      "error",
-      error => {
-
-        console.error(
-          `❌ [${name} VOICE ERROR]`,
-          error
-        );
-
-        console.error(
-          `❌ [${name} ERROR MESSAGE]`,
-          error?.message
-        );
-
-        console.error(
-          `❌ [${name} ERROR STACK]`,
-          error?.stack
-        );
-      }
-    );
-
-    // ----------------------------------------
-    // STATE CHANGE
-    // ----------------------------------------
-
-    connection.on(
-      "stateChange",
-      (
-        oldState,
-        newState
-      ) => {
-
-        console.log(
-          `🔄 [${name}] Voice state:`,
-          oldState.status,
-          "→",
-          newState.status
-        );
-      }
-    );
-
-    // ----------------------------------------
-    // DAVE TRANSITION
-    // ----------------------------------------
-
-    connection.on(
-      "transitioned",
-      transitionId => {
-
-        console.log(
-          `🔐 [${name}] DAVE transitioned:`,
-          transitionId
-        );
-      }
-    );
-
-    // ----------------------------------------
-    // DISCONNECTED
-    // ----------------------------------------
-
-    connection.on(
-      VoiceConnectionStatus.Disconnected,
-      () => {
-
-        console.log(
-          `⚠️ [${name}] Voice connection DISCONNECTED`
-        );
-      }
+    console.error(
+      `❌ [${name}]`,
+      error.message
     );
   }
+);
 
-  // ==========================================
-  // RECEIVER DIAGNOSTIC
-  // ==========================================
-
-  setupReceiverDiagnostic() {
-
-    if (!this.aliveConnection) {
-
-      console.log(
-        "❌ Alive connection does not exist."
-      );
-
-      return;
-    }
-
-    const receiver =
-      this.aliveConnection.receiver;
-
-    if (!receiver) {
-
-      console.log(
-        "❌ Voice receiver does not exist."
-      );
-
-      return;
-    }
+connection.on(
+  "stateChange",
+  (
+    oldState,
+    newState
+  ) => {
 
     console.log(
-      "🎧 ======================================"
+      `🔄 [${name}]`,
+      oldState.status,
+      "→",
+      newState.status
     );
+  }
+);
+
+connection.on(
+  VoiceConnectionStatus.Disconnected,
+  () => {
 
     console.log(
-      "🎧 VOICE RECEIVER DIAGNOSTIC"
+      `⚠️ [${name}] DISCONNECTED`
     );
+  }
+);
 
-    console.log(
-      "🎧 Receiver exists:",
-      !!receiver
-    );
+}
 
-    console.log(
-      "🎧 Speaking map exists:",
-      !!receiver.speaking
-    );
+// ==========================================
+// DESTROY
+// ==========================================
 
-    console.log(
-      "🎧 Current subscriptions:",
-      receiver.subscriptions.size
-    );
+destroy() {
 
-    console.log(
-      "🎧 Current SSRC map size:",
-      receiver.ssrcMap.size
-    );
+console.log(
+  "🛑 Stopping Voice Bridge..."
+);
 
-    console.log(
-      "🎧 Speaking start listeners BEFORE:",
-      receiver.speaking.listenerCount(
-        "start"
-      )
-    );
+// ========================================
+// STOP MIXER
+// ========================================
 
-    console.log(
-      "🎧 Speaking stop listeners BEFORE:",
-      receiver.speaking.listenerCount(
-        "end"
-      )
-    );
+if (this.mixTimer) {
 
-    console.log(
-      "🎧 ======================================"
-    );
+  clearInterval(
+    this.mixTimer
+  );
 
-    // ========================================
-    // REMOVE OLD LISTENERS
-    // ========================================
+  this.mixTimer = null;
+}
 
-    if (this.speakingHandler) {
+// ========================================
+// REMOVE SPEAKERS
+// ========================================
 
-      receiver.speaking.off(
+for (
+  const userId
+  of this.subscriptions.keys()
+) {
+
+  this.removeSpeaker(
+    userId
+  );
+}
+
+this.subscriptions.clear();
+this.audioFrames.clear();
+
+// ========================================
+// RECEIVER LISTENERS
+// ========================================
+
+if (
+  this.aliveConnection &&
+  this.aliveConnection.receiver
+) {
+
+  if (this.speakingHandler) {
+
+    this.aliveConnection
+      .receiver
+      .speaking
+      .off(
         "start",
         this.speakingHandler
       );
-    }
+  }
 
-    if (this.speakingStopHandler) {
+  if (this.speakingStopHandler) {
 
-      receiver.speaking.off(
+    this.aliveConnection
+      .receiver
+      .speaking
+      .off(
         "end",
         this.speakingStopHandler
       );
-    }
-
-    // ========================================
-    // SPEAKING START
-    // ========================================
-
-    this.speakingHandler =
-      userId => {
-
-        console.log(
-          "🔥 ======================================"
-        );
-
-        console.log(
-          "🔥 SPEAKING EVENT RECEIVED"
-        );
-
-        console.log(
-          "👤 USER ID:",
-          userId
-        );
-
-        console.log(
-          "🔥 ======================================"
-        );
-
-        // ------------------------------------
-        // IMPORTANT:
-        // Subscribe to this user's Opus stream
-        // ------------------------------------
-
-        try {
-
-          const stream =
-            receiver.subscribe(
-              userId,
-              {
-                end: {
-                  behavior: "silence",
-                  duration: 100
-                }
-              }
-            );
-
-          console.log(
-            "📡 Audio subscription created for:",
-            userId
-          );
-
-          let packetCount = 0;
-
-          stream.on(
-            "data",
-            packet => {
-
-              packetCount++;
-
-              if (packetCount === 1) {
-
-                console.log(
-                  "📦 FIRST AUDIO PACKET RECEIVED"
-                );
-
-                console.log(
-                  "👤 USER:",
-                  userId
-                );
-
-                console.log(
-                  "📦 PACKET TYPE:",
-                  typeof packet
-                );
-
-                console.log(
-                  "📦 BUFFER:",
-                  Buffer.isBuffer(packet)
-                );
-
-                console.log(
-                  "📦 PACKET SIZE:",
-                  Buffer.isBuffer(packet)
-                    ? packet.length
-                    : "not-buffer"
-                );
-              }
-
-              if (
-                packetCount % 50 === 0
-              ) {
-
-                console.log(
-                  `📦 ${packetCount} audio packets received from ${userId}`
-                );
-              }
-            }
-          );
-
-          stream.on(
-            "end",
-            () => {
-
-              console.log(
-                `📡 Audio stream ended: ${userId} | packets: ${packetCount}`
-              );
-            }
-          );
-
-          stream.on(
-            "error",
-            error => {
-
-              console.error(
-                `❌ Audio stream error for ${userId}:`,
-                error
-              );
-
-              console.error(
-                "❌ Audio stream error message:",
-                error?.message
-              );
-            }
-          );
-
-        } catch (error) {
-
-          console.error(
-            "❌ Could not subscribe to user audio:",
-            error
-          );
-
-          console.error(
-            "❌ Subscribe error message:",
-            error?.message
-          );
-        }
-      };
-
-    // ========================================
-    // SPEAKING STOP
-    // ========================================
-
-    this.speakingStopHandler =
-      userId => {
-
-        console.log(
-          `🛑 SPEAKING STOP: ${userId}`
-        );
-      };
-
-    // ========================================
-    // ATTACH LISTENERS
-    // ========================================
-
-    receiver.speaking.on(
-      "start",
-      this.speakingHandler
-    );
-
-    receiver.speaking.on(
-      "end",
-      this.speakingStopHandler
-    );
-
-    console.log(
-      "🎧 Speaking start listener attached."
-    );
-
-    console.log(
-      "🎧 Speaking end listener attached."
-    );
-
-    console.log(
-      "🎧 Speaking start listeners AFTER:",
-      receiver.speaking.listenerCount(
-        "start"
-      )
-    );
-
-    console.log(
-      "🎧 Speaking end listeners AFTER:",
-      receiver.speaking.listenerCount(
-        "end"
-      )
-    );
-
-    console.log(
-      "🎧 Receiver diagnostic READY."
-    );
   }
+}
 
-  // ==========================================
-  // DESTROY
-  // ==========================================
+this.speakingHandler = null;
+this.speakingStopHandler = null;
 
-  destroy() {
+// ========================================
+// OUTPUT STREAM
+// ========================================
 
-    console.log(
-      "🛑 Stopping Voice Bridge..."
-    );
+if (this.outputStream) {
 
-    // ========================================
-    // ALIVE RECEIVER CLEANUP
-    // ========================================
+  try {
+    this.outputStream.end();
+  } catch {}
+
+  this.outputStream = null;
+}
+
+// ========================================
+// AUDIO PLAYER
+// ========================================
+
+if (this.alivePlayer) {
+
+  try {
+    this.alivePlayer.stop();
+  } catch {}
+
+  this.alivePlayer = null;
+}
+
+// ========================================
+// ALIVE CONNECTION
+// ========================================
+
+if (this.aliveConnection) {
+
+  try {
 
     if (
-      this.aliveConnection &&
-      this.aliveConnection.receiver &&
-      this.speakingHandler
+      this.aliveConnection.state.status !==
+      VoiceConnectionStatus.Destroyed
     ) {
 
-      try {
-
-        this.aliveConnection
-          .receiver
-          .speaking
-          .off(
-            "start",
-            this.speakingHandler
-          );
-
-        if (this.speakingStopHandler) {
-
-          this.aliveConnection
-            .receiver
-            .speaking
-            .off(
-              "end",
-              this.speakingStopHandler
-            );
-        }
-
-      } catch (error) {
-
-        console.log(
-          "ℹ️ Receiver cleanup:",
-          error.message
-        );
-      }
+      this.aliveConnection.destroy();
     }
 
-    this.speakingHandler = null;
-    this.speakingStopHandler = null;
+  } catch {}
 
-    // ========================================
-    // ALIVE CONNECTION
-    // ========================================
+  this.aliveConnection = null;
+}
 
-    if (this.aliveConnection) {
+// ========================================
+// DEAD CONNECTION
+// ========================================
 
-      try {
+if (this.deadConnection) {
 
-        if (
-          this.aliveConnection.state.status !==
-          VoiceConnectionStatus.Destroyed
-        ) {
+  try {
 
-          this.aliveConnection.destroy();
-        }
+    if (
+      this.deadConnection.state.status !==
+      VoiceConnectionStatus.Destroyed
+    ) {
 
-      } catch (error) {
-
-        console.log(
-          "ℹ️ Alive connection already destroyed:",
-          error.message
-        );
-      }
-
-      this.aliveConnection = null;
+      this.deadConnection.destroy();
     }
 
-    // ========================================
-    // DEAD CONNECTION
-    // ========================================
+  } catch {}
 
-    if (this.deadConnection) {
+  this.deadConnection = null;
+}
 
-      try {
+this.connected = false;
 
-        if (
-          this.deadConnection.state.status !==
-          VoiceConnectionStatus.Destroyed
-        ) {
+console.log(
+  "🛑 Voice Bridge stopped."
+);
 
-          this.deadConnection.destroy();
-        }
-
-      } catch (error) {
-
-        console.log(
-          "ℹ️ Dead connection already destroyed:",
-          error.message
-        );
-      }
-
-      this.deadConnection = null;
-    }
-
-    this.connected = false;
-
-    console.log(
-      "🛑 Voice Bridge stopped."
-    );
-  }
+}
 }
